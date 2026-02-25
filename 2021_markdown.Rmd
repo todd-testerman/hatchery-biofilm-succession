@@ -1,0 +1,1530 @@
+---
+title: "2021_USDA"
+author: "Todd Testerman"
+date: "7/19/2022"
+output: html_document
+---
+
+
+```{r}
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(phyloseq, BiocManager, qiime2R, tidyverse, viridis, pheatmap, ggplot2, vegan, patchwork, ggpubr, ranacapa, nlme, compositions, readr, devtools, DESeq2, microViz, ANCOMBC, microbiome, GUniFrac, rstatix, corncob, scales, MicEco, btools, dplyr, tibble, pairwiseAdonis, metagMisc, biomehorizon, devEMF, cowplot, microbiomeutilities, UpSetR, MicrobiotaProcess, ComplexUpset, randomForest, doParallel, NetCoMi)
+
+set.seed(816)
+permutations = 9999
+```
+
+Import
+
+```{r}
+phy = qza_to_phyloseq(features = "table-all-runs.qza", tree = "phylogeny/rooted_tree.qza", taxonomy = "taxonomy-sv-all-runs.qza", metadata = "mapping_file_all_runs.txt",tmp = "/var/folders/67/6dbph7ys1d3240bqc4wgn7380000gp/T/")
+ntaxa(phy)
+nsamples(phy)
+
+#tax_fix_interactive(phy)
+#adjust tax table for use in microviz
+phy = phy%>%
+ tax_fix(
+  min_length = 3,
+  unknowns = c("","Incertae_Sedis", "uncultured", "Unknown_Family", "Unknown_Family Family"),
+  sep = " ", anon_unique = TRUE,
+  suffix_rank = "classified"
+ )
+#remove prefix
+phy@tax_table = gsub("d__", "", phy@tax_table)
+#treat maturity groups as factors to set order as early, middle, late
+phy@sam_data$Maturity_Group = factor(phy@sam_data$Maturity_Group, levels = c("Early", "Middle", "Late"))
+```
+
+Subset by Sample Type
+
+```{r}
+#create object with only active raceways from the big sampling date
+phy_no_dry_or_time_series = subset_samples(phy, State != "Dry" & Time_Series != "Yes")
+phy_no_dry_or_time_series_rarefy = rarefy_even_depth(phy_no_dry_or_time_series, 8000)
+nsamples(phy_no_dry_or_time_series)
+
+#subset to only include surfaces
+phy_surfaces = subset_samples(phy_no_dry_or_time_series, Sample_Type == "Wall" | Sample_Type == "Tailscreen" | Sample_Type == "Baffle")
+phy_surfaces_rarefy = rarefy_even_depth(phy_surfaces, 8000)
+nsamples(phy_surfaces)
+
+#subset to only include wall swabs
+phy_wall_swabs = subset_samples(phy_no_dry_or_time_series, Sample_Type == "Wall")
+phy_wall_swabs_rarefy = rarefy_even_depth(phy_wall_swabs, 8000)
+nsamples(phy_wall_swabs)
+
+#subset to only include sterivex
+phy_sterivex = subset_samples(phy_no_dry_or_time_series, Sample_Type == "Sterivex")
+phy_sterivex_rarefy = rarefy_even_depth(phy_sterivex, 8000)
+nsamples(phy_sterivex)
+
+#subset to only include prefilter
+phy_prefilter = subset_samples(phy_no_dry_or_time_series, Sample_Type == "Prefilter")
+phy_prefilter_rarefy = rarefy_even_depth(phy_prefilter, 8000)
+nsamples(phy_prefilter)
+
+#subset to only include baffle swabs
+phy_baffles = subset_samples(phy_no_dry_or_time_series, Sample_Type == "Baffle")
+phy_baffles_rarefy = rarefy_even_depth(phy_baffles, 8000)
+nsamples(phy_baffles)
+
+#subset to only include tailscreen swabs
+phy_tailscreen = subset_samples(phy_no_dry_or_time_series, Sample_Type == "Tailscreen")
+phy_tailscreen_rarefy = rarefy_even_depth(phy_tailscreen, 8000)
+nsamples(phy_tailscreen)
+
+#subset to only include time series
+phy_time_series = subset_samples(phy, State != "Dry" & Time_Series == "Yes")
+nsamples(phy_time_series)
+
+#subset to only include late samples
+phy_late = subset_samples(phy_surfaces, Maturity_Group == "Late")
+phy_late_rarefy = subset_samples(phy_surfaces_rarefy, Maturity_Group == "Late")
+nsamples(phy_late)
+
+#subset to only include middle samples
+phy_middle = subset_samples(phy_surfaces, Maturity_Group == "Middle")
+phy_middle_rarefy = subset_samples(phy_surfaces_rarefy, Maturity_Group == "Middle")
+nsamples(phy_middle)
+
+#subset to only include middle wall swabs
+phy_ws_middle = subset_samples(phy_wall_swabs, Maturity_Group == "Middle")
+phy_ws_middle_rarefy = subset_samples(phy_wall_swabs_rarefy, Maturity_Group == "Middle")
+nsamples(phy_ws_middle)
+
+#subset to only include day 23 wall swabs for comparison between stainless steel tank walls and concrete walls
+phy_ws_23d = subset_samples(phy_wall_swabs, Maturity_Days == "23")
+phy_ws_23d_rarefy = subset_samples(phy_wall_swabs_rarefy, Maturity_Days == "23")
+nsamples(phy_ws_23)
+
+```
+
+Make a Palette
+
+```{r}
+genus_palette = distinct_palette(n = 41)
+names(genus_palette) = tax_top(phy_wall_swabs, n = 41, by = sum, rank = "Genus")
+names(genus_palette)[42] = "Other"
+
+class_palette = distinct_palette(n = 41)
+names(class_palette) = tax_top(phy_wall_swabs, n = 41, by = sum, rank = "Class")
+names(class_palette)[42] = "Other"
+
+#set figure theme
+theme_settings = theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text.x = element_text(size = 8, face = "bold"), axis.text.y = element_text(size = 8, face = "bold"), axis.title.y = element_text(size = 12, face = "bold"), legend.key.size = unit(0.2, 'cm'))
+```
+
+
+
+Barplots - Wall Swabs
+
+```{r, fig.width= 10, fig.height=12} 
+#Class - Maturity Group
+barplot_ws_class_legend_adjust = comp_barplot(phy_wall_swabs, tax_level = "Class", n_taxa = 20, bar_outline_colour = "black", sample_order = "bray", palette = class_palette) + 
+  facet_grid(cols = vars(Maturity_Group), scales = "free", space = "free") +
+  theme_settings +
+  guides(fill = guide_legend(ncol = 1, reverse = F, title = "Class"))
+barplot_ws_class_legend_adjust
+
+#Genus - Maturity Group
+barplot_ws_genus_legend_adjust = comp_barplot(phy_wall_swabs, tax_level = "Genus", n_taxa = 30, bar_outline_colour = "black", sample_order = "bray", palette = genus_palette) + facet_grid(cols = vars(Maturity_Group), scales = "free", space = "free") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text.x = element_text(size = 8, face = "bold"), axis.text.y = element_text(size = 8, face = "bold"), axis.title.y = element_text(size = 12, face = "bold"), legend.key.size = unit(0.2, 'cm')) +
+  guides(fill = guide_legend(ncol = 1, reverse = F, title = "Genus"))
+barplot_ws_genus_legend_adjust
+
+#Figure 1
+Figure_1 = barplot_ws_class_legend_adjust / barplot_ws_genus_legend_adjust + plot_annotation(tag_levels = "A")
+Figure_1
+ggsave("Figures_all/Figure_1_barplots.png", width= 10, height=12)
+ggsave("Figures_all/Figure_1_barplots_ggsave.tiff", dpi = 300)
+
+save_plot("Figures_all/Figure_1_barplots_cowplot.tiff", Figure_1, base_height = 8)
+
+
+#order samples by raceway for plot
+phy_wall_swabs_hatch_order = ps_arrange(phy_wall_swabs, Raceway)
+#Class - Maturity Day
+barplot_ws_class_legend_adjust_maturity_days = comp_barplot(phy_wall_swabs, tax_level = "Class", n_taxa = 20, bar_outline_colour = "black", sample_order = "bray", palette = class_palette, group_by = "Matrity_Day") + 
+  facet_grid(cols = vars(Raceway), scales = "free", space = "free") +
+  theme_settings +
+  guides(fill = guide_legend(ncol = 1, reverse = F, title = "Class"))
+barplot_ws_class_legend_adjust_maturity_days
+
+
+#Genus - Maturity Day
+barplot_ws_genus_legend_adjust_maturity_days = comp_barplot(phy_wall_swabs_hatch_order, tax_level = "Genus", n_taxa = 30, bar_outline_colour = "black", sample_order = "asis", palette = genus_palette) + facet_grid(cols = vars(Maturity_Days), scales = "free", space = "free") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text.x = element_text(size = 8, face = "bold"), axis.text.y = element_text(size = 8, face = "bold"), axis.title.y = element_text(size = 12, face = "bold"), legend.key.size = unit(0.2, 'cm')) +
+  guides(fill = guide_legend(ncol = 1, reverse = F, title = "Genus"))
+barplot_ws_genus_legend_adjust_maturity_days2 = comp_barplot(phy_wall_swabs, tax_level = "Genus", n_taxa = 30, bar_outline_colour = "black", sample_order = "bray", palette = genus_palette) + facet_grid(cols = vars(Maturity_Days), scales = "free", space = "free") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text.x = element_text(size = 8, face = "bold"), axis.text.y = element_text(size = 8, face = "bold"), axis.title.y = element_text(size = 12, face = "bold"), legend.key.size = unit(0.2, 'cm')) +
+  guides(fill = guide_legend(ncol = 1, reverse = F, title = "Genus"))
+barplot_ws_genus_legend_adjust_maturity_days
+barplot_ws_genus_legend_adjust_maturity_days2
+
+ggsave("Figures_all/barplot_ws_genus_legend_adjust_maturity_days2.png", width= 10, height=12)
+ggsave("Figures_all/barplot_ws_genus_legend_adjust_maturity_days2.tiff", dpi = 300)
+
+save_plot("Figures_all/barplot_ws_genus_legend_adjust_maturity_days2.tiff", Figure_1, base_height = 8)
+```
+
+Barplots - Tailscreens
+
+```{r, fig.width= 10, fig.height=12} 
+#Class
+barplot_tailscreen_class_legend_adjust = comp_barplot(phy_tailscreen, tax_level = "Class", n_taxa = 20, bar_outline_colour = "black", sample_order = "bray", palette = class_palette) + 
+  facet_grid(cols = vars(Maturity_Group), scales = "free", space = "free") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text.x = element_text(size = 8, face = "bold"), axis.text.y = element_text(size = 8, face = "bold"), axis.title.y = element_text(size = 12, face = "bold"), legend.key.size = unit(0.2, 'cm')) +
+  guides(fill = guide_legend(ncol = 1, reverse = F, title = "Class"))
+barplot_tailscreen_class_legend_adjust
+#Genus
+barplot_tailscreen_genus_legend_adjust = comp_barplot(phy_tailscreen, tax_level = "Genus", n_taxa = 30, bar_outline_colour = "black", sample_order = "bray", palette = genus_palette) + 
+  facet_grid(cols = vars(Maturity_Group), scales = "free", space = "free") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text.x = element_text(size = 8, face = "bold"), axis.text.y = element_text(size = 8, face = "bold"), axis.title.y = element_text(size = 12, face = "bold"), legend.key.size = unit(0.2, 'cm')) +
+  guides(fill = guide_legend(ncol = 1, reverse = F, title = "Genus"))
+barplot_tailscreen_genus_legend_adjust
+
+#SFigure 1
+SFigure_1 = barplot_tailscreen_class_legend_adjust / barplot_tailscreen_genus_legend_adjust + plot_annotation(tag_levels = "A")
+SFigure_1
+ggsave("Figures_all/SFigure_1_barplots.png", width= 10, height=12)
+ggsave("Figures_all/SFigure_1_barplots.tiff", dpi = 300)
+
+save_plot("Figures_all/SFigure_1_barplots.tiff", SFigure_1, base_height = 8)
+
+#Genus
+barplot_tailscreen_genus_legend_adjust2 = comp_barplot(phy_tailscreen, tax_level = "Genus", n_taxa = 30, bar_outline_colour = "black", sample_order = "bray", palette = genus_palette) + 
+  facet_grid(cols = vars(Maturity_Days), scales = "free", space = "free") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text.x = element_text(size = 8, face = "bold"), axis.text.y = element_text(size = 8, face = "bold"), axis.title.y = element_text(size = 12, face = "bold"), legend.key.size = unit(0.2, 'cm')) +
+  guides(fill = guide_legend(ncol = 1, reverse = F, title = "Genus"))
+barplot_tailscreen_genus_legend_adjust2
+
+#Maturity Days Tailscreens
+
+ggsave("Figures_all/Maturity_Days_tailscreen_barplots.png", width= 10, height=12)
+ggsave("Figures_all/Maturity_Days_tailscreen.tiff", dpi = 300)
+
+save_plot("Figures_all/Maturity_Days_tailscreen.tiff", SFigure_1, base_height = 8)
+```
+
+Barplots - Baffles
+
+```{r, fig.width= 10, fig.height=12} 
+#Class
+barplot_baffles_class_legend_adjust = comp_barplot(phy_baffles, tax_level = "Class", n_taxa = 20, bar_outline_colour = "black", sample_order = "bray", palette = class_palette) + 
+  facet_grid(cols = vars(Maturity_Group), scales = "free", space = "free") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text.x = element_text(size = 8, face = "bold"), axis.text.y = element_text(size = 8, face = "bold"), axis.title.y = element_text(size = 12, face = "bold"), legend.key.size = unit(0.2, 'cm')) +
+  guides(fill = guide_legend(ncol = 1, reverse = F, title = "Class"))
+barplot_baffles_class_legend_adjust
+#Genus
+barplot_baffles_genus_legend_adjust = comp_barplot(phy_baffles, tax_level = "Genus", n_taxa = 30, bar_outline_colour = "black", sample_order = "bray", palette = genus_palette) + 
+  facet_grid(cols = vars(Maturity_Group), scales = "free", space = "free") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text.x = element_text(size = 8, face = "bold"), axis.text.y = element_text(size = 8, face = "bold"), axis.title.y = element_text(size = 12, face = "bold"), legend.key.size = unit(0.2, 'cm')) +
+  guides(fill = guide_legend(ncol = 1, reverse = F, title = "Genus"))
+barplot_baffles_genus_legend_adjust
+
+#SFigure Baffle Bar
+SFigure_baffle_bar = barplot_baffles_class_legend_adjust / barplot_baffles_genus_legend_adjust + plot_annotation(tag_levels = "A")
+SFigure_baffle_bar
+ggsave("Figures_all/Baffle_bar.png", width= 10, height=12)
+ggsave("Figures_all/Baffle_bar.tiff", dpi = 300)
+
+save_plot("Figures_all/Baffle_bar.tiff", SFigure_baffle_bar, base_height = 8)
+
+#Genus
+barplot_baffles_genus_legend_adjust_days = comp_barplot(phy_baffles, tax_level = "Genus", n_taxa = 30, bar_outline_colour = "black", sample_order = "bray", palette = genus_palette) + 
+  facet_grid(cols = vars(Maturity_Days), scales = "free", space = "free") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text.x = element_text(size = 8, face = "bold"), axis.text.y = element_text(size = 8, face = "bold"), axis.title.y = element_text(size = 12, face = "bold"), legend.key.size = unit(0.2, 'cm')) +
+  guides(fill = guide_legend(ncol = 1, reverse = F, title = "Genus"))
+barplot_baffles_genus_legend_adjust_days
+
+#SFigure Baffle Bar
+
+ggsave("Figures_all/Baffle_bar_days.png", width= 10, height=12)
+ggsave("Figures_all/Baffle_bar_days.tiff", dpi = 300)
+
+save_plot("Figures_all/Baffle_bar_days.tiff", barplot_baffles_genus_legend_adjust_days, base_height = 8)
+```
+
+Beta Diversity
+
+```{r, fig.width= 10, fig.height=12} 
+phy_wall_swabs_filter = tax_filter(phy_wall_swabs, min_prevalence = 2)
+
+ord_explore(phy_wall_swabs_filter)
+
+#rarefied
+ord_explore(phy_wall_swabs_rarefy)
+
+#bray
+wall_swabs_bray = phy_wall_swabs_rarefy %>%
+ tax_transform(rank = "unique", trans = "identity") %>%
+ dist_calc(dist = "bray") %>%
+ ord_calc(
+  method = "NMDS"
+ ) %>% 
+ ord_plot(
+  axes = c(1, 2),
+  colour = "Maturity_Group", fill = "Maturity_Group",
+  shape = "circle", alpha = 0.5,
+  size = 2, auto_caption = NA
+ ) +
+ ggplot2::stat_ellipse(
+  ggplot2::aes(colour = Maturity_Group)
+ ) + 
+  labs(color = "Maturity Group", fill = "Maturity Group")
+wall_swabs_bray
+
+bray_perm_results = phy_wall_swabs_rarefy %>%
+ tax_transform(rank = "unique", trans = "identity") %>%
+ dist_calc(dist = "bray") %>%
+ dist_permanova(
+    variables = "Maturity_Group",
+    n_processes = 10,
+  ) 
+bray_perm_results
+write.table(bray_perm_results@permanova, "bray_perm_results.csv", sep = ",")
+pairwise_bray_perm_results = pairwise.adonis(x = otu_get(phy_wall_swabs_rarefy@otu_table), factors = sample_data(phy_wall_swabs_rarefy)$Maturity_Group, sim.method = "bray", p.adjust.m = "holm")
+write.table(pairwise_bray_perm_results, "pairwise_bray_perm_results.csv", sep = ",")
+#Bray beta disp
+bray_bdisp_results = phy_wall_swabs_rarefy %>%
+ tax_transform(rank = "unique", trans = "identity") %>%
+ dist_calc(dist = "bray") %>%
+ dist_bdisp(
+    variables = "Maturity_Group",
+  ) 
+bray_bdisp_results@bdisp
+#jaccard
+wall_swabs_jacc = phy_wall_swabs_rarefy %>%
+ tax_transform(rank = "unique", trans = "identity") %>%
+ dist_calc(dist = "jaccard", binary = T) %>%
+ ord_calc(
+  method = "NMDS"
+ ) %>% 
+ ord_plot(
+  axes = c(1, 2),
+  colour = "Maturity_Group", fill = "Maturity_Group",
+  shape = "circle", alpha = 0.5,
+  size = 2, auto_caption = NA
+ ) +
+ ggplot2::stat_ellipse(
+  ggplot2::aes(colour = Maturity_Group)
+ ) + 
+  labs(color = "Maturity Group", fill = "Maturity Group")
+wall_swabs_jacc
+
+
+jacc_perm_results = phy_wall_swabs_rarefy %>%
+ tax_transform(rank = "unique", trans = "identity") %>%
+ dist_calc(dist = "jaccard", binary = T) %>%
+ dist_permanova(
+    variables = "Maturity_Group",
+    n_processes = 10,
+  ) 
+jacc_perm_results
+write.table(jacc_perm_results@permanova, "jacc_perm_results.csv", sep = ",")
+pairwise_jacc_perm_results = pairwise.adonis(x = otu_get(phy_wall_swabs_rarefy@otu_table), factors = sample_data(phy_wall_swabs_rarefy)$Maturity_Group, sim.method = "jaccard", p.adjust.m = "holm")
+write.table(pairwise_jacc_perm_results, "pairwise_jacc_perm_results.csv", sep = ",")
+
+
+#Jaccard beta disp
+jacc_bdisp_results = phy_wall_swabs_rarefy %>%
+ tax_transform(rank = "unique", trans = "identity") %>%
+ dist_calc(dist = "jaccard") %>%
+ dist_bdisp(
+    variables = "Maturity_Group",
+  ) 
+jacc_bdisp_results@bdisp
+#weighted unifrac
+wall_swabs_wunifrac_calc = phy_wall_swabs_rarefy %>% 
+  dist_calc(dist = "wunifrac")
+
+wall_swabs_wunifrac = wall_swabs_wunifrac_calc %>%
+ ord_calc(
+  method = "NMDS"
+ ) %>% 
+ ord_plot(
+  axes = c(1, 2),
+  colour = "Maturity_Group", fill = "Maturity_Group",
+  shape = "circle", alpha = 0.5,
+  size = 2, auto_caption = NA
+ ) +
+ ggplot2::stat_ellipse(
+  ggplot2::aes(colour = Maturity_Group)
+ ) + 
+  labs(color = "Maturity Group", fill = "Maturity Group")
+wall_swabs_wunifrac
+
+
+wunifrac_perm_results = wall_swabs_wunifrac_calc %>%
+ dist_permanova(
+    variables = "Maturity_Group",
+    n_processes = 10,
+  ) 
+wunifrac_perm_results
+write.table(wunifrac_perm_results@permanova, "wunifrac_perm_results.csv", sep = ",")
+pairwise_wunifrac_perm_results = pairwise.adonis(x = wall_swabs_wunifrac_calc@dist, factors = sample_data(phy_wall_swabs_rarefy)$Maturity_Group, sim.method = "wunifrac", p.adjust.m = "holm")
+write.table(pairwise_wunifrac_perm_results, "pairwise_wunifrac_perm_results.csv", sep = ",")
+
+#Wunifrac beta disp
+wunifrac_bdisp_results = wall_swabs_wunifrac_calc %>%
+ dist_bdisp(
+    variables = "Maturity_Group",
+  ) 
+wunifrac_bdisp_results@bdisp
+#This is the only significant bdisp result - dispersion is not homogenous between early and late wall swabs for weighted unifrac metric
+
+#unweighted unifrac
+wall_swabs_unifrac_calc = phy_wall_swabs_rarefy %>% 
+  dist_calc(dist = "unifrac")
+
+wall_swabs_unifrac = wall_swabs_unifrac_calc %>%
+ ord_calc(
+  method = "NMDS"
+ ) %>% 
+ ord_plot(
+  axes = c(1, 2),
+  colour = "Maturity_Group", fill = "Maturity_Group",
+  shape = "circle", alpha = 0.5,
+  size = 2, auto_caption = NA
+ ) +
+ ggplot2::stat_ellipse(
+  ggplot2::aes(colour = Maturity_Group)
+ ) + 
+  labs(color = "Maturity Group", fill = "Maturity Group")
+wall_swabs_unifrac
+
+
+unifrac_perm_results = wall_swabs_unifrac_calc %>%
+ dist_permanova(
+    variables = "Maturity_Group",
+    n_processes = 10,
+  ) 
+unifrac_perm_results
+write.table(unifrac_perm_results@permanova, "unifrac_perm_results.csv", sep = ",")
+pairwise_unifrac_perm_results = pairwise.adonis(x = wall_swabs_unifrac_calc@dist, factors = sample_data(phy_wall_swabs_rarefy)$Maturity_Group, sim.method = "unifrac", p.adjust.m = "holm")
+write.table(pairwise_unifrac_perm_results, "pairwise_unifrac_perm_results.csv", sep = ",")
+
+#Unifrac beta disp
+unifrac_bdisp_results = wall_swabs_unifrac_calc %>%
+ dist_bdisp(
+    variables = "Maturity_Group",
+  ) 
+unifrac_bdisp_results@bdisp
+#Patchwork for Figure 2 - 4 metrics NMDS
+Figure_2 = wall_swabs_bray + wall_swabs_jacc + wall_swabs_wunifrac + wall_swabs_unifrac + plot_annotation(tag_levels = "A") + plot_layout(guides = "collect")
+Figure_2
+
+Figure_2 = barplot_tailscreen_class_legend_adjust / barplot_tailscreen_genus_legend_adjust + plot_annotation(tag_levels = "A")
+Figure_2
+ggsave("Figures_all/Figure_2_beta_div.png", width= 10, height=12)
+ggsave("Figures_all/Figure_2_beta_div.tiff", dpi = 300)
+
+save_plot("Figures_all/Figure_2_beta_div_cow.tiff", Figure_2, base_height = 6, ncol = 2, nrow = 2)
+
+#SFig PCA arrows plus iris
+
+PCA_wall_swabs = PCA_wall_swabs +
+ ggplot2::stat_ellipse(
+  ggplot2::aes(colour = Maturity_Group)) +
+  labs(color = "Maturity Group", fill = "Maturity Group") +
+  theme(axis.ticks.x = element_blank(), strip.text.x = element_text(size = 8, face = "bold"), axis.text.x = element_text(size = 8, face = "bold"), axis.text.y = element_text(size = 8, face = "bold"), axis.title.x = element_text(size = 12, face = "bold"), axis.title.y = element_text(size = 12, face = "bold"), legend.key.size = unit(0.2, 'cm'))
+  
+iris_plot = phy_wall_swabs_filter %>% 
+  tax_transform(rank = "Genus", trans = "clr") %>%
+ ord_calc(
+  method = "auto") %>% 
+  ord_plot_iris(tax_level = "Genus", ord_plot = "none", anno_colour = "Maturity_Group", n_taxa = 20, palette = genus_palette) +
+  guides(color = "none")
+
+SFig_PCA_arrows_iris_plot = PCA_wall_swabs / iris_plot + plot_annotation(tag_levels = "A") + plot_layout(guides = "collect")
+ggsave("Figures_all/SFig_PCA_arrows_iris_plot.png", width= 10, height=12)
+ggsave("Figures_all/SFig_PCA_arrows_iris_plot.tiff", dpi = 300)
+
+save_plot("Figures_all/SFig_PCA_arrows_iris_cowplot.tiff", SFig_PCA_arrows_iris_plot, base_height = 8)
+```
+
+
+
+Alpha Diversity
+
+```{r}
+#faith
+faith_all_groups_ws = estimate_pd(phy_wall_swabs_rarefy)
+faith_all_groups_ws = rownames_to_column(faith_all_groups_ws, "Sample")
+psmelt_ws_rarefy = psmelt(phy_wall_swabs_rarefy)
+psmelt_ws_rarefy = psmelt_ws_rarefy %>% distinct(Sample, .keep_all = T)
+merged_for_faith_ws = merge(psmelt_ws_rarefy, faith_all_groups_ws, by = "Sample")
+merged_for_faith_ws = as_data_frame(merged_for_faith_ws)
+
+faith_ws = ggplot(merged_for_faith_ws, aes(y=PD, x=Maturity_Group, color=Maturity_Group)) + geom_boxplot(show.legend = T, outlier.size = 0.2, lwd = 0.25) + geom_point(size = 0.2) 
+faith_ws = faith_ws + theme_bw() + theme(strip.background = element_blank(), strip.text.x = element_blank(), axis.text.x = element_blank(), axis.title.x = element_blank()) + labs(color = "Maturity Group") + ylab("Faith's PD Index Value")
+faith_ws
+
+#normality test
+merged_for_faith_ws %>% group_by(Maturity_Group) %>% shapiro_test(PD)
+#normal distribution for all groups -------> use parametric test
+faith_ttest_all_groups_ws = merged_for_faith_ws %>% t_test(PD ~ Maturity_Group)
+faith_ttest_all_groups_ws
+#export stats, if desired
+write.table(faith_ttest_all_groups_ws, "faith_ttest_ws.csv", sep = ",")
+
+#Shannon
+shannon_ws = plot_richness(phy_wall_swabs_rarefy, x = "Maturity_Group", measures = "Shannon", color = "Maturity_Group")
+shannon_ws = shannon_ws + geom_boxplot(data = shannon_ws$data, show.legend = T, outlier.size = 0.2, lwd = 0.25) + geom_point(size = 0.2)
+shannon_ws$layers = shannon_ws$layers[-1]
+shannon_ws = shannon_ws + theme_bw() + theme(strip.background = element_blank(), strip.text.x = element_blank(), axis.text.x = element_blank(), axis.title.x = element_blank()) + labs(color = "Maturity Group") + ylab("Shannon Diversity Index Value")
+shannon_ws
+
+#normality test
+shannon_data_ws = shannon_ws$data
+colnames(shannon_data_ws)[34] = "Shannon_Index"
+shannon_data_ws %>% group_by(Maturity_Group) %>% shapiro_test(Shannon_Index)
+#non-normal distribution for 2/3 groups -------> use non-parametric test
+shannon_wilcox_all_groups_ws = shannon_data_ws %>% wilcox_test(Shannon_Index ~ Maturity_Group)
+shannon_wilcox_all_groups_ws
+#export stats, if desired
+write.table(shannon_wilcox_all_groups_ws, "shannon_wilcox_ws.csv", sep = ",")
+
+#Observed ASVs
+observed_ASV_ws = plot_richness(phy_wall_swabs_rarefy, x = "Maturity_Group", measures = "Observed", color = "Maturity_Group")
+observed_ASV_ws = observed_ASV_ws + geom_boxplot(data = observed_ASV_ws$data, show.legend = T, outlier.size = 0.2, lwd = 0.25) + geom_point(size = 0.2)
+observed_ASV_ws$layers = observed_ASV_ws$layers[-1]
+observed_ASV_ws = observed_ASV_ws + theme_bw() + theme(strip.background = element_blank(), strip.text.x = element_blank(), axis.text.x = element_blank(), axis.title.x = element_blank()) + labs(color = "Maturity Group") + ylab("Observed ASVs")
+observed_ASV_ws
+
+#normality test
+observed_ASV_data_ws = observed_ASV_ws$data
+colnames(observed_ASV_data_ws)[35] = "Observed_ASVs"
+observed_ASV_data_ws %>% group_by(Maturity_Group) %>% shapiro_test(Observed_ASVs)
+#non-normal distribution for 2/3 groups -------> use non-parametric test
+observed_ASV_wilcox_all_groups_ws = observed_ASV_data_ws %>% wilcox_test(Observed_ASVs ~ Maturity_Group)
+observed_ASV_wilcox_all_groups_ws
+#export stats, if desired
+write.table(observed_ASV_wilcox_all_groups_ws, "observed_ASV_wilcox_ws.csv", sep = ",")
+
+#Figure 3
+Figure_3_alpha_div = observed_ASV_ws + shannon_ws + faith_ws
+Figure_3_alpha_div = Figure_3_alpha_div + plot_annotation(tag_levels = 'A') + plot_layout(guides = 'collect')
+Figure_3_alpha_div
+
+ggsave("Figures_all/Figure_3_alpha_div.png")
+ggsave("Figures_all/Figure_3_alpha_div.tiff", dpi = 300)
+
+save_plot("Figures_all/Figure_3_alpha_div_cow.tiff", Figure_3_alpha_div, base_height = 8)
+```
+
+
+UpSet Plots
+
+```{r, fig.width= 10, fig.height=4} 
+#remove ASVs absent in all samples
+phy_wall_swabs_clean = filter_taxa(phy_wall_swabs_filter, function(x) sum(x) > 1, prune = T)
+#Class level
+#standardize group size between maturity groups
+phy_wall_swabs_clean_merged = merge_samples(phy_wall_swabs_clean, group = "Maturity_Group")
+#re-add maturity info to merged object
+sample_data(phy_wall_swabs_clean_merged)$Maturity_Group = sample_names(phy_wall_swabs_clean_merged)
+#rarefy to even depth to reduce uneven sequence depth bias
+phy_wall_swabs_clean_merged_rarefy = rarefy_even_depth(phy_wall_swabs_clean_merged, rngseed = F, trimOTUs = T)
+#make upset ready object from phyloseq
+upset_wall_swabs = get_upset(phy_wall_swabs_clean_merged_rarefy, factorNames = "Maturity_Group")
+#extract taxonomy info
+wall_swab_taxonomy = as.data.frame(phy_wall_swabs_clean_merged_rarefy@tax_table)
+#bind taxonomy info onto upset-compatible data
+upset_wall_swabs_final = cbind(upset_wall_swabs, wall_swab_taxonomy)
+#rearrange data so barplot will be displayed with most commonly observed classes at the top
+upset_wall_swabs_final_classes = upset_wall_swabs_final %>%
+  add_count(Class) %>%
+  arrange(desc(n))
+
+#Set order of classes in figure
+classes_for_order_setting = tax_top(phy_wall_swabs_clean_merged_rarefy, n = 10, by = sum, rank = "Class")
+
+
+#generate upset plot
+wall_class_upset = upset(data = upset_wall_swabs_final_classes, intersect = c("Late", "Middle", "Early"), sort_sets = F, name = "Maturity Group", 
+        set_sizes=(
+        upset_set_size()
+        + ylab('Total ASVs')
+    ), themes=upset_modify_themes(
+        list('overall_sizes'=theme(axis.text.x=element_text(angle=90)))),
+      base_annotations=list(
+        'Intersection size'=intersection_size(
+            counts=FALSE,
+            mapping=aes(fill=factor(Class, levels = classes_for_order_setting))
+        ) + scale_fill_manual(values=class_palette) + 
+          labs(fill = "Class") + ylab("Shared ASVs")
+    ),
+    width_ratio=0.1
+) 
+wall_class_upset
+
+#Genus level
+
+#rearrange data so barplot will be displayed with most commonly observed genera at the top
+upset_wall_swabs_final_genera = upset_wall_swabs_final %>%
+  add_count(Genus) %>%
+  arrange(desc(n))
+#Set order of genera in figure
+genera_for_order_setting = tax_top(phy_wall_swabs_clean_merged_rarefy, n = 25, by = sum, rank = "Genus")
+
+#manually add some genera to palette
+#names(genus_palette)[21] = "Pseudomomnas"
+#names(genus_palette)[22] = "Inhella"
+#names(genus_palette)[23] = "Runella"
+#names(genus_palette)[24] = "Rubritalea"
+#names(genus_palette)[25] = "Caulobacter"
+#genus_palette = genus_palette[order(names(genus_palette))]
+#genus_palette
+#generate upset plot
+wall_genus_upset = upset(data = upset_wall_swabs_final_genera, intersect = c("Late", "Middle", "Early"), sort_sets = F, name = "Maturity Group", 
+        set_sizes=(
+        upset_set_size()
+        + ylab('Total ASVs')
+    ), themes=upset_modify_themes(
+        list('overall_sizes'=theme(axis.text.x=element_text(angle=90)))),
+      base_annotations=list(
+        'Intersection size'=intersection_size(
+            counts=FALSE,
+            mapping=aes(fill=factor(Genus, levels = genera_for_order_setting))
+        ) + scale_fill_manual(values=genus_palette
+        ) + labs(fill = "Genus") + ylab("Shared ASVs")
+    ),
+    width_ratio=0.1
+) 
+wall_genus_upset
+
+#Figure 4
+Figure_4 = wall_genus_upset
+Figure_4
+
+ggsave("Figures_all/Figure_4_upset_plots_genus.png")
+ggsave("Figures_all/Figure_4_upset_plots_genus.tiff", dpi = 300)
+
+save_plot("Figures_all/Figure_4_upset_plots_genus_cow.tiff", Figure_4, base_height = 9)
+
+#SFigure2 Class Upset plot
+SFigure_2 = wall_class_upset
+SFigure_2
+
+ggsave("Figures_all/SFigure_2_upset_plots_class.png")
+ggsave("Figures_all/SFigure_2_upset_plots_class.tiff", dpi = 300)
+
+save_plot("Figures_all/SFigure_2_upset_plots_class_cow.tiff", SFigure_2, base_height = 9)
+```
+
+ANCOM-BC
+
+```{r, fig.width= 10, fig.height=12} 
+#ANCOM-BC
+
+phy_wall_swabs_clean_class = aggregate_taxa(phy_wall_swabs_clean, "Class")
+phy_wall_swabs_clean_class_filtered = tax_filter(phy_wall_swabs_clean_class, min_prevalence = 1/10)
+
+#Early vs Late
+phy_wall_swabs_clean_class_filtered_no_middle = subset_samples(phy_wall_swabs_clean_class_filtered, Maturity_Group != "Middle")
+
+ancom_early_late_class = ancombc(phy_wall_swabs_clean_class_filtered_no_middle, group = "Maturity_Group", formula = "Maturity_Group", neg_lb = T)
+res_early_late_class = ancom_early_late_class$res
+as.data.frame(res_early_late_class)
+#Waterfall plot
+df_fig1 = data.frame(res_early_late_class$beta * res_early_late_class$diff_abn, check.names = FALSE) %>% 
+  rownames_to_column("taxon_id")
+df_fig2 = data.frame(res_early_late_class$se * res_early_late_class$diff_abn, check.names = FALSE) %>% 
+  rownames_to_column("taxon_id")
+colnames(df_fig2)[-1] = paste0(colnames(df_fig2)[-1], "SD")
+df_fig = df_fig1 %>% left_join(df_fig2, by = "taxon_id") %>%
+  transmute(taxon_id, Maturity_GroupLate, Maturity_GroupLateSD) %>%
+  filter(Maturity_GroupLate != 0) %>% arrange(desc(Maturity_GroupLate)) %>%
+  mutate(group = ifelse(Maturity_GroupLate > 0, "g1", "g2"))
+df_fig$taxon_id = factor(df_fig$taxon_id, levels = df_fig$taxon_id)
+  
+waterfall_plot_early_late_class = ggplot(data = df_fig, 
+           aes(x = taxon_id, y = Maturity_GroupLate, fill = group, color = group)) + 
+  geom_bar(stat = "identity", width = 0.7, 
+           position = position_dodge(width = 0.4)) +
+  geom_errorbar(aes(ymin = Maturity_GroupLate - Maturity_GroupLateSD, ymax = Maturity_GroupLate + Maturity_GroupLateSD), width = 0.2,
+                position = position_dodge(0.05), color = "black") + 
+  labs(x = NULL, y = "Log fold change" 
+       ) + 
+  theme_bw() + 
+  theme(legend.position = "none", 
+        plot.title = element_text(hjust = 0.5),
+        panel.grid.minor.y = element_blank(),
+        axis.text.x = element_text(angle = 60, hjust = 1, size = 10))
+
+waterfall_plot_early_late_class
+res_early_late_class$diff_abn
+
+#Genus
+phy_wall_swabs_clean_genus = aggregate_taxa(phy_wall_swabs_clean, "Genus")
+phy_wall_swabs_clean_genus_filtered = tax_filter(phy_wall_swabs_clean_genus, min_prevalence = 1/10)
+
+#Early vs Late
+phy_wall_swabs_clean_genus_filtered_no_middle = subset_samples(phy_wall_swabs_clean_genus_filtered, Maturity_Group != "Middle")
+
+ancom_early_late_genus = ancombc(phy_wall_swabs_clean_genus_filtered_no_middle, group = "Maturity_Group", formula = "Maturity_Group", neg_lb = T)
+res_early_late_genus = ancom_early_late_genus$res
+as.data.frame(res_early_late_genus)
+#Waterfall plot
+df_fig1 = data.frame(res_early_late_genus$beta * res_early_late_genus$diff_abn, check.names = FALSE) %>% 
+  rownames_to_column("taxon_id")
+df_fig2 = data.frame(res_early_late_genus$se * res_early_late_genus$diff_abn, check.names = FALSE) %>% 
+  rownames_to_column("taxon_id")
+colnames(df_fig2)[-1] = paste0(colnames(df_fig2)[-1], "SD")
+df_fig = df_fig1 %>% left_join(df_fig2, by = "taxon_id") %>%
+  transmute(taxon_id, Maturity_GroupLate, Maturity_GroupLateSD) %>%
+  filter(Maturity_GroupLate != 0) %>% arrange(desc(Maturity_GroupLate)) %>%
+  mutate(group = ifelse(Maturity_GroupLate > 0, "g1", "g2"))
+df_fig$taxon_id = factor(df_fig$taxon_id, levels = df_fig$taxon_id)
+  
+waterfall_plot_early_late_genus = ggplot(data = df_fig, 
+           aes(x = taxon_id, y = Maturity_GroupLate, fill = group, color = group)) + 
+  geom_bar(stat = "identity", width = 0.7, 
+           position = position_dodge(width = 0.4)) +
+  geom_errorbar(aes(ymin = Maturity_GroupLate - Maturity_GroupLateSD, ymax = Maturity_GroupLate + Maturity_GroupLateSD), width = 0.2,
+                position = position_dodge(0.05), color = "black") + 
+  labs(x = NULL, y = "Log fold change" 
+       ) + 
+  theme_bw() + 
+  theme(legend.position = "none", 
+        plot.title = element_text(hjust = 0.5),
+        panel.grid.minor.y = element_blank(),
+        axis.text.x = element_text(angle = 60, hjust = 1, size = 10))
+
+waterfall_plot_early_late_genus
+res_early_late_genus$diff_abn
+
+#Figure 5
+Figure_5 = waterfall_plot_early_late_class / waterfall_plot_early_late_genus + plot_annotation(tag_levels = "A")
+Figure_5
+
+ggsave("Figures_all/Figure_5_ancomBC.png", width = 11)
+ggsave("Figures_all/Figure_5_ancomBC.tiff", width = 11, dpi = 300)
+
+save_plot("Figures_all/Figure_5_ancomBC_cow.tiff", Figure_5, base_height = 9)
+```
+
+Random Forest - Classify into Early, Middle, Late State Biofilms
+
+```{r}
+#Pre-process to remove low prevalence ASVs
+phy_wall_swabs_clean_prev_filter= tax_filter(phy_wall_swabs_clean, min_prevalence = 1/10)
+#remove ASVs absent in all samples
+phy_wall_swabs_clean_prev_filter = filter_taxa(phy_wall_swabs_clean_prev_filter, function(x) sum(x) > 1, prune = T)
+#rename ASVs to only numbers to avoid weird table issue downstream
+taxa_names(phy_wall_swabs_clean_prev_filter) = paste("ASV", taxa_names(phy_wall_swabs_clean_prev_filter), sep = "")
+taxa_names(phy_wall_swabs_clean_prev_filter)
+#Maturity Group
+predictors <- t(otu_table(phy_wall_swabs_clean_prev_filter))
+dim(predictors)
+
+response <- as.factor(sample_data(phy_wall_swabs_clean_prev_filter)$Maturity_Group)
+#combine
+rf.data <- data.frame(response, predictors)
+#tune to determine optimum mtry value
+tuneRF(y = response, x = rf.data, stepFactor = 1.5, ntreeTry = 500, improve = 0.001, mtry = 8)
+#generate RF model
+set.seed(816)
+maturity.classify <- randomForest(response~., data = rf.data, ntree = 5000, mtry = 48)
+maturity.classify
+#add taxonomy info to important model factors
+tax.rf = tax_table(phy_wall_swabs_clean_prev_filter)
+
+imp <- importance(maturity.classify)
+imp <- data.frame(predictors = rownames(imp), imp)
+
+#add taxonomy
+imp.w.taxa = data.frame(imp, tax.rf)
+
+# Order the predictor levels by importance
+imp.sort <- arrange(imp.w.taxa, desc(MeanDecreaseGini))
+imp.sort$predictors <- factor(imp.sort$predictors, levels = imp.sort$predictors)
+
+# Select the top 25 predictors
+imp.25 <- imp.sort[1:25, ]
+imp.25
+
+#new palette to improve this figure
+genus_palette2 = distinct_palette(n = 30, add = NA)
+names(genus_palette2) = unique(imp.25$Genus)
+genus_palette2
+
+random_forest_25_imp_asvs = ggplot(imp.25, aes(x = predictors, y = MeanDecreaseGini, fill = Genus)) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab("Importance (Mean Decrease in Gini)") + xlab("ASV") +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = genus_palette2) 
+random_forest_25_imp_asvs
+
+#SFigure3
+ggsave("Figures_all/SFigure_3_RF_25_asvs.png", width = 4)
+ggsave("Figures_all/SFigure_3_RF_25_asvs.tiff", width = 11, dpi = 300)
+
+save_plot("Figures_all/SFigure_3_RF_25_asvs_cow.tiff", random_forest_25_imp_asvs, base_height = 6)
+```
+
+Boxplots of Consensus Drivers of Maturity Across PCAs, ANCOM, RF
+
+```{r, fig.width= 10, fig.height=12} 
+#Prepare for extraction
+phy_wall_swabs_clean_genus = aggregate_taxa(phy_wall_swabs_clean, level = "Genus")
+phy_wall_swabs_clean_genus_normalize = transform_sample_counts(phy_wall_swabs_clean_genus, function(x) (x / sum(x))*100)
+melted_phy_wall_swabs_clean_genus_normalize = psmelt(phy_wall_swabs_clean_genus_normalize)
+#Same as above but for species when looking at Fc and Fp
+phy_wall_swabs_clean_species = aggregate_taxa(phy_wall_swabs_clean, level = "unique")
+phy_wall_swabs_clean_species_normalize = transform_sample_counts(phy_wall_swabs_clean_species, function(x) (x / sum(x))*100)
+melted_phy_wall_swabs_clean_species_normalize = psmelt(phy_wall_swabs_clean_species_normalize)
+
+#Haliscomenobacter
+melted_phy_wall_swabs_clean_subset_halisco = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Haliscomenobacter")
+
+#add comparison variable for plotting comparisons
+my_comparisons = list(c("Early", "Middle"),c("Early", "Late"), c("Middle", "Late"))
+
+halisco_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_halisco, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans=scales::pseudo_log_trans(base = 10), limits = c(0, 100), expand = c(0,0), breaks = c(0, 1, 5, 10, 20, 30, 40)) + ggtitle("Haliscomenobacter")
+
+
+halisco_maturity_comp
+
+#Caulobacter
+melted_phy_wall_swabs_clean_subset_caulo = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Caulobacter")
+
+caulo_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_caulo, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 10), expand = c(0,0), breaks = c(0, 1, 2, 3, 4, 5, 10)) + ggtitle("Caulobacter")
+
+
+caulo_maturity_comp
+
+#Inhella
+melted_phy_wall_swabs_clean_subset_inhella = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Inhella")
+
+inhella_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_inhella, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 3), expand = c(0,0), breaks = c(0, 1, 2)) + ggtitle("Inhella")
+
+
+inhella_maturity_comp
+
+#Rhizorhapis
+melted_phy_wall_swabs_clean_subset_rhizor = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Rhizorhapis")
+
+rhizor_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_rhizor, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 50), expand = c(0,0), breaks = c(0, 1, 5, 10, 20, 30, 40)) + ggtitle("Rhizorhapis")
+
+
+rhizor_maturity_comp
+
+#Sphingorhabdus
+melted_phy_wall_swabs_clean_subset_sphingorh = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Sphingorhabdus")
+
+sphingorh_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_sphingorh, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 20), expand = c(0,0), breaks = c(0, 1, 2, 3, 4, 5, 10)) + ggtitle("Sphingorhabdus")
+
+
+sphingorh_maturity_comp
+
+#Phreatobacter
+melted_phy_wall_swabs_clean_subset_phreato = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Phreatobacter")
+
+phreato_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_phreato, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 8), expand = c(0,0), breaks = c(0, 1, 2, 3, 4, 5)) + ggtitle("Phreatobacter")
+
+
+phreato_maturity_comp
+
+#Runella
+melted_phy_wall_swabs_clean_subset_runella = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Runella")
+
+runella_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_runella, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 10), expand = c(0,0), breaks = c(0, 1, 2, 3, 4, 5, 10)) + ggtitle("Runella")
+
+runella_maturity_comp
+
+#Rubritalea
+melted_phy_wall_swabs_clean_subset_rubrit = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Rubritalea")
+
+rubrit_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_rubrit, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 200), expand = c(0,0), breaks = c(0, 1, 5, 10, 20, 30, 40, 100)) + ggtitle("Rubritalea")
+
+
+rubrit_maturity_comp
+
+#Pseudomonas
+melted_phy_wall_swabs_clean_subset_pseudo = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Pseudomonas")
+
+pseudo_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_pseudo, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 100), expand = c(0,0), breaks = c(0, 1, 5, 10, 20, 30, 40, 100)) + ggtitle("Pseudomonas")
+
+
+pseudo_maturity_comp
+
+#Flavobacterium
+melted_phy_wall_swabs_clean_subset_flavo = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Flavobacterium")
+
+flavo_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_flavo, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 200), expand = c(0,0), breaks = c(0, 1, 5, 10, 20, 30, 40, 100)) + ggtitle("Flavobacterium")
+
+
+flavo_maturity_comp
+
+#Flavobacterium columnare
+melted_phy_wall_swabs_clean_subset_flavo_col = subset(melted_phy_wall_swabs_clean_species_normalize, Species %in% "Flavobacterium_columnare")
+
+flavo_col_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_flavo_col, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 8), expand = c(0,0), breaks = c(0, 1, 5)) + ggtitle("Flavobacterium columnare")
+
+
+flavo_col_maturity_comp
+
+#Flavobacterium psychrophilum
+melted_phy_wall_swabs_clean_subset_flavo_psych = subset(melted_phy_wall_swabs_clean_species_normalize, Species %in% "Flavobacterium_psychrophilum")
+
+flavo_psych_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_flavo_psych, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 8), expand = c(0,0), breaks = c(0, 1, 5)) + ggtitle("Flavobacterium psychrophilum")
+
+
+flavo_psych_maturity_comp
+
+#Saprospiraceae Family
+melted_phy_wall_swabs_clean_subset_sapro = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Saprospiraceae Family")
+
+sapro_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_sapro, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 150), expand = c(0,0), breaks = c(0, 1, 5, 10, 20, 30, 40, 100)) + ggtitle("Saprospiraceae Family")
+
+
+
+sapro_maturity_comp
+
+#Rhodobacteraceae Family
+melted_phy_wall_swabs_clean_subset_rhodo = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Rhodobacteraceae Family")
+
+rhodo_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_rhodo, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 100), expand = c(0,0), breaks = c(0, 1, 5, 10, 20, 30, 40, 100)) + ggtitle("Rhodobacteraceae Family")
+
+
+rhodo_maturity_comp
+
+
+#Sphingomonadaceae Family
+melted_phy_wall_swabs_clean_subset_sphingo = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Sphingomonadaceae Family")
+
+sphingo_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_sphingo, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 20), expand = c(0,0), breaks = c(0, 1, 2, 3, 4, 5, 10)) + ggtitle("Sphingomonadaceae Family")
+
+sphingo_maturity_comp
+
+#Verrucomicrobiaceae Family
+melted_phy_wall_swabs_clean_subset_verruco = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Verrucomicrobiaceae Family")
+
+verruco_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_verruco, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 10), expand = c(0,0), breaks = c(0, 1, 2, 3, 4, 5, 10)) + ggtitle("Verrucomicrobiaceae Family")
+
+verruco_maturity_comp
+
+#Chitinophagales Order
+melted_phy_wall_swabs_clean_subset_chitino = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Chitinophagales Order")
+
+chitino_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_chitino, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 25), expand = c(0,0), breaks = c(0, 1, 2, 3, 4, 5, 10, 20)) + ggtitle("Chitinophagales Order")
+
+chitino_maturity_comp
+
+#Bacteria Kingdom
+melted_phy_wall_swabs_clean_subset_bacteria = subset(melted_phy_wall_swabs_clean_genus_normalize, Genus %in% "Bacteria Kingdom")
+
+bacteria_maturity_comp <- ggplot(melted_phy_wall_swabs_clean_subset_bacteria, aes(x=Maturity_Group, y=Abundance)) + geom_boxplot(outlier.shape = NA) + geom_dotplot(binaxis='y', stackdir='center', dotsize = 0) + theme_bw() + geom_point(aes(colour = Maturity_Group)) + theme(text = element_text(size = 12)) + theme(axis.text.x=element_blank(), axis.title.x = element_blank()) + ylab("Relative Abundance") + labs(colour = "Maturity Group") + stat_compare_means(label = "p.signif", comparisons = my_comparisons, method = "wilcox") + scale_y_continuous(trans = "pseudo_log", limits = c(0, 25), expand = c(0,0), breaks = c(0, 1, 2, 3, 4, 5, 10, 20)) + ggtitle("Bacteria Kingdom")
+
+bacteria_maturity_comp
+
+#Patchwork
+important_taxa_boxplots = (halisco_maturity_comp + caulo_maturity_comp + inhella_maturity_comp + rhizor_maturity_comp + sphingorh_maturity_comp + phreato_maturity_comp + runella_maturity_comp + rubrit_maturity_comp + flavo_maturity_comp + sapro_maturity_comp + rhodo_maturity_comp + sphingo_maturity_comp + verruco_maturity_comp + chitino_maturity_comp + bacteria_maturity_comp) + plot_layout(guides = "collect")
+important_taxa_boxplots
+
+ggsave("Figures_all/Important_Genera_RF.png", width = 11)
+ggsave("Figures_all/Important_Genera_RF.tiff", width = 11, dpi = 600)
+
+save_plot("Figures_all/Important_Genera_RF_cow.tiff", important_taxa_boxplots, base_height = 11)
+
+#Fc only
+save_plot("Figures_all/Fc_maturity.tiff", flavo_col_maturity_comp, base_height = 4)
+
+#Fp only
+save_plot("Figures_all/Fp_maturity.tiff", flavo_psych_maturity_comp, base_height = 4)
+```
+
+
+
+
+Random Forest - Regression Based on Percent Mortality
+
+```{r}
+#percent mortality
+response_mortality <- as.factor(sample_data(phy_wall_swabs_clean_prev_filter)$Percent_Mortality_SamplingDay)
+#combine
+rf.data.mortality <- data.frame(response_mortality, predictors)
+#tune to determine optimum mtry value
+tuneRF(y = as.numeric(response_mortality), x = rf.data.mortality, stepFactor = 1.5, ntreeTry = 5000, improve = 0.001, mtry = 48)
+#generate RF model
+mortality.classify <- randomForest(as.numeric(response_mortality)~., data = rf.data.mortality, ntree = 5000, mtry = 48, importance = T)
+mortality.classify
+
+#add taxonomy info to important model factors
+
+imp.mort <- importance(mortality.classify)
+imp.mort <- data.frame(predictors = rownames(imp,mort), imp.mort)
+
+#add taxonomy
+imp.mort.w.taxa = data.frame(imp.mort, tax.rf)
+
+# Order the predictor levels by importance
+imp.mort.sort <- arrange(imp.mort.w.taxa, desc(X.IncMSE))
+imp.mort.sort$predictors <- factor(imp.mort.sort$predictors, levels = imp.mort.sort$predictors)
+
+# Select the top 25 predictors
+imp.mort.25 <- imp.mort.sort[1:25, ]
+imp.mort.25
+
+#new palette to improve this figure
+genus_palette2 = distinct_palette(n = 15, add = NA)
+names(genus_palette2) = unique(imp.25$Genus)
+genus_palette2
+
+random_forest_25_imp_asvs = ggplot(imp.25, aes(x = predictors, y = MeanDecreaseGini, fill = Genus)) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab("Importance") + xlab("ASV") +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = genus_palette2) 
+random_forest_25_imp_asvs
+
+```
+
+Network Analysis
+
+```{r, fig.width= 10, fig.height=12} 
+net_spring <- netConstruct(phy_wall_swabs_clean_genus_filtered,
+                           filtTax = "highestFreq",
+                           filtTaxPar = list(highestFreq = 50),
+                           measure = "spring",
+                           measurePar = list(nlambda=10, 
+                                             rep.num=10),
+                           normMethod = "none", 
+                           zeroMethod = "none",
+                           sparsMethod = "none", 
+                           dissFunc = "signed",
+                           verbose = 2,
+                           seed = 123456)
+
+props_spring <- netAnalyze(net_spring, 
+                           centrLCC = TRUE,
+                           clustMethod = "cluster_fast_greedy",
+                           hubPar = "eigenvector",
+                           weightDeg = FALSE, normDeg = FALSE)
+
+
+
+taxtableextract <- as(tax_table(phy_wall_swabs_clean_genus_filtered), "matrix")
+class_frame <- as.factor(taxtableextract[, "Class"])
+names(class_frame) <- taxtableextract[, "Genus"]
+unique(class_frame)
+
+#new class palette with only these class
+class_palette = distinct_palette(n = 27, add = NA)
+names(class_palette) = tax_top(phy_wall_swabs_clean_genus_filtered, n = 27, by = sum, rank = "Class")
+
+
+plot(props_spring,
+     layout = "spring",
+     repulsion = 0.84,
+     shortenLabels = "none",
+     labelScale = FALSE,
+     nodeSize = "clr",
+     nodeSizeSpread = 4,
+     nodeColor = "feature", 
+     featVecCol = class_frame, 
+     posCol = "darkturquoise", 
+     negCol = "orange",
+     edgeTranspLow = 0,
+     edgeTranspHigh = 40,
+     cexNodes = 0.5,
+     cexLabels = 0.5,
+     cexHubLabels = 1,
+     title1 = "Network on genus level with Pearson correlations", 
+     showTitle = FALSE,
+     cexTitle = 2.3)
+ 
+
+# Colors used in the legend should be equally transparent as in the plot
+phyla_pal_transp <- colToTransp(phyla_palette, 60)
+
+legend(-1.1, 1.5, cex = 0.75, pt.cex = 1, title = "Phylum:", 
+       legend=levels(phyla_frame), col = phyla_pal_transp, bty = "n", pch = 16) 
+
+legend(0.7, 1, cex = 1, title = "Estimated Correlation",
+       legend = c("+","-"), lty = 1, lwd = 3, col = c("darkturquoise","orange"), 
+       bty = "n", horiz = TRUE)
+
+
+#Species
+phy_wall_swabs_clean_species = aggregate_taxa(phy_wall_swabs_clean, "Species")
+phy_wall_swabs_clean_species_filtered = tax_filter(phy_wall_swabs_clean_species, min_prevalence = 1/10)
+
+net_spring_species <- netConstruct(phy_wall_swabs_clean_species_filtered,
+                           filtTax = "highestFreq",
+                           filtTaxPar = list(highestFreq = 50),
+                           measure = "spring",
+                           measurePar = list(nlambda=10, 
+                                             rep.num=10),
+                           normMethod = "none", 
+                           zeroMethod = "none",
+                           sparsMethod = "none", 
+                           dissFunc = "signed",
+                           verbose = 2,
+                           seed = 123456)
+
+props_spring_species <- netAnalyze(net_spring_species, 
+                           centrLCC = TRUE,
+                           clustMethod = "cluster_fast_greedy",
+                           hubPar = "eigenvector",
+                           weightDeg = FALSE, normDeg = FALSE)
+
+
+taxtableextract2 <- as(tax_table(phy_wall_swabs_clean_species_filtered), "matrix")
+phyla_frame2 <- as.factor(taxtableextract2[, "Phylum"])
+names(phyla_frame) <- taxtableextract2[, "Species"]
+unique(phyla_frame)
+
+plot(props_spring_species,
+     layout = "spring",
+     repulsion = 0.84,
+     shortenLabels = "none",
+     labelScale = FALSE,
+     nodeSize = "clr",
+     nodeSizeSpread = 4,
+     posCol = "darkturquoise", 
+     negCol = "orange",
+     edgeTranspLow = 0,
+     edgeTranspHigh = 40,
+     cexNodes = 0.5,
+     cexLabels = 0.5,
+     cexHubLabels = 1,
+     title1 = "Network on genus level with Pearson correlations", 
+     showTitle = FALSE,
+     cexTitle = 2.3)
+
+```
+
+Raceway to Raceway Comparisons
+
+```{r, fig.width= 10, fig.height=12} 
+phy_wall_swabs_filter = tax_filter(phy_wall_swabs, min_prevalence = 2)
+
+ord_explore(phy_wall_swabs_filter)
+
+#rarefied
+ord_explore(phy_wall_swabs_rarefy)
+
+#bray
+wall_swabs_bray = phy_wall_swabs_rarefy %>%
+ tax_transform(rank = "unique", trans = "identity") %>%
+ dist_calc(dist = "bray") %>%
+ ord_calc(
+  method = "NMDS"
+ ) %>% 
+ ord_plot(
+  axes = c(1, 2),
+  colour = "Maturity_Group", fill = "Maturity_Group",
+  shape = "circle", alpha = 0.5,
+  size = 2, auto_caption = NA
+ ) +
+ ggplot2::stat_ellipse(
+  ggplot2::aes(colour = Maturity_Group)
+ ) + 
+  labs(color = "Maturity Group", fill = "Maturity Group")
+wall_swabs_bray
+
+bray_perm_results = phy_wall_swabs_rarefy %>%
+ tax_transform(rank = "unique", trans = "identity") %>%
+ dist_calc(dist = "bray") %>%
+ dist_permanova(
+    variables = "Maturity_Group",
+    n_processes = 10,
+  ) 
+bray_perm_results
+write.table(bray_perm_results@permanova, "bray_perm_results.csv", sep = ",")
+pairwise_bray_perm_results = pairwise.adonis(x = otu_get(phy_wall_swabs_rarefy@otu_table), factors = sample_data(phy_wall_swabs_rarefy)$Maturity_Group, sim.method = "bray", p.adjust.m = "holm")
+write.table(pairwise_bray_perm_results, "pairwise_bray_perm_results.csv", sep = ",")
+#Bray beta disp
+bray_bdisp_results = phy_wall_swabs_rarefy %>%
+ tax_transform(rank = "unique", trans = "identity") %>%
+ dist_calc(dist = "bray") %>%
+ dist_bdisp(
+    variables = "Maturity_Group",
+  ) 
+bray_bdisp_results@bdisp
+#jaccard
+wall_swabs_jacc = phy_wall_swabs_rarefy %>%
+ tax_transform(rank = "unique", trans = "identity") %>%
+ dist_calc(dist = "jaccard", binary = T) %>%
+ ord_calc(
+  method = "NMDS"
+ ) %>% 
+ ord_plot(
+  axes = c(1, 2),
+  colour = "Maturity_Group", fill = "Maturity_Group",
+  shape = "circle", alpha = 0.5,
+  size = 2, auto_caption = NA
+ ) +
+ ggplot2::stat_ellipse(
+  ggplot2::aes(colour = Maturity_Group)
+ ) + 
+  labs(color = "Maturity Group", fill = "Maturity Group")
+wall_swabs_jacc
+
+
+jacc_perm_results = phy_wall_swabs_rarefy %>%
+ tax_transform(rank = "unique", trans = "identity") %>%
+ dist_calc(dist = "jaccard", binary = T) %>%
+ dist_permanova(
+    variables = "Maturity_Group",
+    n_processes = 10,
+  ) 
+jacc_perm_results
+write.table(jacc_perm_results@permanova, "jacc_perm_results.csv", sep = ",")
+pairwise_jacc_perm_results = pairwise.adonis(x = otu_get(phy_wall_swabs_rarefy@otu_table), factors = sample_data(phy_wall_swabs_rarefy)$Maturity_Group, sim.method = "jaccard", p.adjust.m = "holm")
+write.table(pairwise_jacc_perm_results, "pairwise_jacc_perm_results.csv", sep = ",")
+
+
+#Jaccard beta disp
+jacc_bdisp_results = phy_wall_swabs_rarefy %>%
+ tax_transform(rank = "unique", trans = "identity") %>%
+ dist_calc(dist = "jaccard") %>%
+ dist_bdisp(
+    variables = "Maturity_Group",
+  ) 
+jacc_bdisp_results@bdisp
+#weighted unifrac
+wall_swabs_wunifrac_calc = phy_wall_swabs_rarefy %>% 
+  dist_calc(dist = "wunifrac")
+
+wall_swabs_wunifrac = wall_swabs_wunifrac_calc %>%
+ ord_calc(
+  method = "NMDS"
+ ) %>% 
+ ord_plot(
+  axes = c(1, 2),
+  colour = "Maturity_Group", fill = "Maturity_Group",
+  shape = "circle", alpha = 0.5,
+  size = 2, auto_caption = NA
+ ) +
+ ggplot2::stat_ellipse(
+  ggplot2::aes(colour = Maturity_Group)
+ ) + 
+  labs(color = "Maturity Group", fill = "Maturity Group")
+wall_swabs_wunifrac
+
+
+wunifrac_perm_results = wall_swabs_wunifrac_calc %>%
+ dist_permanova(
+    variables = "Maturity_Group",
+    n_processes = 10,
+  ) 
+wunifrac_perm_results
+write.table(wunifrac_perm_results@permanova, "wunifrac_perm_results.csv", sep = ",")
+pairwise_wunifrac_perm_results = pairwise.adonis(x = wall_swabs_wunifrac_calc@dist, factors = sample_data(phy_wall_swabs_rarefy)$Maturity_Group, sim.method = "wunifrac", p.adjust.m = "holm")
+write.table(pairwise_wunifrac_perm_results, "pairwise_wunifrac_perm_results.csv", sep = ",")
+
+#Wunifrac beta disp
+wunifrac_bdisp_results = wall_swabs_wunifrac_calc %>%
+ dist_bdisp(
+    variables = "Maturity_Group",
+  ) 
+wunifrac_bdisp_results@bdisp
+#This is the only significant bdisp result - dispersion is not homogenous between early and late wall swabs for weighted unifrac metric
+
+#unweighted unifrac
+wall_swabs_unifrac_calc = phy_wall_swabs_rarefy %>% 
+  dist_calc(dist = "unifrac")
+
+wall_swabs_unifrac = wall_swabs_unifrac_calc %>%
+ ord_calc(
+  method = "NMDS"
+ ) %>% 
+ ord_plot(
+  axes = c(1, 2),
+  colour = "Maturity_Group", fill = "Maturity_Group",
+  shape = "circle", alpha = 0.5,
+  size = 2, auto_caption = NA
+ ) +
+ ggplot2::stat_ellipse(
+  ggplot2::aes(colour = Maturity_Group)
+ ) + 
+  labs(color = "Maturity Group", fill = "Maturity Group")
+wall_swabs_unifrac
+
+
+unifrac_perm_results = wall_swabs_unifrac_calc %>%
+ dist_permanova(
+    variables = "Maturity_Group",
+    n_processes = 10,
+  ) 
+unifrac_perm_results
+write.table(unifrac_perm_results@permanova, "unifrac_perm_results.csv", sep = ",")
+pairwise_unifrac_perm_results = pairwise.adonis(x = wall_swabs_unifrac_calc@dist, factors = sample_data(phy_wall_swabs_rarefy)$Maturity_Group, sim.method = "unifrac", p.adjust.m = "holm")
+write.table(pairwise_unifrac_perm_results, "pairwise_unifrac_perm_results.csv", sep = ",")
+
+#Unifrac beta disp
+unifrac_bdisp_results = wall_swabs_unifrac_calc %>%
+ dist_bdisp(
+    variables = "Maturity_Group",
+  ) 
+unifrac_bdisp_results@bdisp
+#Patchwork for Figure 2 - 4 metrics NMDS
+Figure_2 = wall_swabs_bray + wall_swabs_jacc + wall_swabs_wunifrac + wall_swabs_unifrac + plot_annotation(tag_levels = "A") + plot_layout(guides = "collect")
+Figure_2
+
+Figure_2 = barplot_tailscreen_class_legend_adjust / barplot_tailscreen_genus_legend_adjust + plot_annotation(tag_levels = "A")
+Figure_2
+ggsave("Figures_all/Figure_2_beta_div.png", width= 10, height=12)
+ggsave("Figures_all/Figure_2_beta_div.tiff", dpi = 300)
+
+save_plot("Figures_all/Figure_2_beta_div_cow.tiff", Figure_2, base_height = 6, ncol = 2, nrow = 2)
+
+#SFig PCA arrows plus iris
+
+PCA_wall_swabs = PCA_wall_swabs +
+ ggplot2::stat_ellipse(
+  ggplot2::aes(colour = Maturity_Group)) +
+  labs(color = "Maturity Group", fill = "Maturity Group") +
+  theme(axis.ticks.x = element_blank(), strip.text.x = element_text(size = 8, face = "bold"), axis.text.x = element_text(size = 8, face = "bold"), axis.text.y = element_text(size = 8, face = "bold"), axis.title.x = element_text(size = 12, face = "bold"), axis.title.y = element_text(size = 12, face = "bold"), legend.key.size = unit(0.2, 'cm'))
+  
+iris_plot = phy_wall_swabs_filter %>% 
+  tax_transform(rank = "Genus", trans = "clr") %>%
+ ord_calc(
+  method = "auto") %>% 
+  ord_plot_iris(tax_level = "Genus", ord_plot = "none", anno_colour = "Maturity_Group", n_taxa = 20, palette = genus_palette) +
+  guides(color = "none")
+
+SFig_PCA_arrows_iris_plot = PCA_wall_swabs / iris_plot + plot_annotation(tag_levels = "A") + plot_layout(guides = "collect")
+ggsave("Figures_all/SFig_PCA_arrows_iris_plot.png", width= 10, height=12)
+ggsave("Figures_all/SFig_PCA_arrows_iris_plot.tiff", dpi = 300)
+
+save_plot("Figures_all/SFig_PCA_arrows_iris_cowplot.tiff", SFig_PCA_arrows_iris_plot, base_height = 8)
+```
+
+Heatmap to show maturity differences and raceway similarity
+
+```{r, fig.width= 16, fig.height=12} 
+#Filter low abundance taxa (genus must be have 1000 or more reads in two samples to be included)
+phy_wall_swabs_clean_genus_heatmap = tax_filter(phy_wall_swabs_clean_genus, min_prevalence = 2, prev_detection_threshold = 1000, tax_level = "Genus", verbose = T)
+#convert to relative abundances
+phy_wall_swabs_clean_genus_heatmap_normalize = transform_sample_counts(phy_wall_swabs_clean_genus_heatmap, function(x) (x / sum(x))*100)
+#arrange sample order
+phy_wall_swabs_clean_genus_heatmap_normalize = ps_arrange(phy_wall_swabs_clean_genus_heatmap_normalize, Maturity_Group, Maturity_Days, Raceway)
+#Convert genus names to a factor
+genusfac = factor(tax_table(phy_wall_swabs_clean_genus_heatmap_normalize)[, "Genus"])
+#Generate table using genfac as index and pulling values from the otu_table
+genustab = apply(otu_table(phy_wall_swabs_clean_genus_heatmap_normalize), MARGIN = 2, function(x) {
+     tapply(x, INDEX = genusfac, FUN = sum, na.rm = TRUE, simplify = TRUE)
+ })
+
+#Use psmelt function to convert phyloseq object into single, large R object
+melted_phy_table_ws_heatmap = psmelt(phy_wall_swabs_clean_genus_heatmap_normalize)
+#Reorder based on genus name
+reordered_melted = melted_phy_table_ws_heatmap[order(melted_phy_table_ws_heatmap$Genus),]
+#Remove duplicate genus names
+reordered_melted_unique = reordered_melted %>% distinct(Genus, .keep_all = T)
+#Create data frame with phylum and genus names paired 
+class_frame = subset(reordered_melted_unique, select = c(Class, Genus))
+#Set rownames to the genus names
+rownames(class_frame) = class_frame$Genus
+#Remove column we just used as rownames (no longer needed)
+class_frame = subset(class_frame, select = -c(Genus))
+
+#Only keep unique samples within the melted R object created above
+reordered_melted_unique_sample = reordered_melted %>% distinct(Sample, .keep_all = T)
+#Create data frame with Sample ID and Metadata
+sample_type_frame = subset(reordered_melted_unique_sample, select = c(Sample, Maturity_Group, Maturity_Days, Raceway))
+#Set rownames to SampleID
+rownames(sample_type_frame) = sample_type_frame$Sample
+#Remove column we just used as rownames (no longer needed)
+sample_type_frame = subset(sample_type_frame, select = -c(Sample))
+sample_type_frame[, "Maturity_Days"] <- sapply(sample_type_frame[, "Maturity_Days"], as.character)
+
+#Order class within melted object  alphabetically. The "order" function defaults to this automatically
+reordered_melted_class = melted_phy_table_ws_heatmap[order(melted_phy_table_ws_heatmap$Class),]
+#Remove duplicate genus entries
+reordered_melted_class_no_genus_dups = reordered_melted_class %>% distinct(Genus, .keep_all = TRUE)
+#Reorder genustab based on genus ordered by phylum, alphabetically
+genustab_reorder = genustab[reordered_melted_class_no_genus_dups$Genus, colnames(genustab)]
+genustab_reorder
+
+#Regenerate class frame (for row annotations) using reordered objects from above
+class_frame = data.frame(Class = reordered_melted_class_no_genus_dups$Class)
+rownames(class_frame) = reordered_melted_class_no_genus_dups$Genus
+
+#custom colors for class annotation
+class_palette_heatmap = distinct_palette(n = 13, add = NA)
+names(class_palette_heatmap) = unique(class_frame$Class)
+class_palette_heatmap = class_palette_heatmap[order(names(class_palette_heatmap))]
+class_palette_heatmap
+
+#custom colors for raceway annotation
+raceway_palette_heatmap = distinct_palette(n = 21, add = NA, pal = "greenArmytage")
+names(raceway_palette_heatmap) = unique(sample_type_frame$Raceway)
+raceway_palette_heatmap = raceway_palette_heatmap[order(names(raceway_palette_heatmap))]
+raceway_palette_heatmap
+
+#custom colors for maturity days annotation
+days_palette_heatmap = distinct_palette(n = 6, add = NA, pal = "kelly")
+names(days_palette_heatmap) = unique(sample_type_frame$Maturity_Days)
+days_palette_heatmap = days_palette_heatmap[order(as.numeric(names(days_palette_heatmap)))]
+days_palette_heatmap
+
+ann_colors = list(
+    Maturity_Group = c(Early = "red", Middle = "purple", Late = "blue"),
+    Raceway = raceway_palette_heatmap,
+    Maturity_Days = days_palette_heatmap,
+    Class = class_palette_heatmap
+    )
+
+heatmap = pheatmap(log10(genustab_reorder+1), cluster_rows = F, cluster_cols = F, annotation_row = class_frame, annotation_col = sample_type_frame, angle_col = "315", fontsize_row = 10, fontsize_col = 8, show_colnames = F, border_color = NA, annotation_colors = ann_colors)
+heatmap
+ggsave("heatmap.png", plot = heatmap, width = 16, height = 14, dpi = 600)
+ggsave("heatmap.eps", width = 16, height = 12)
+ggsave("heatmap.tiff", width = 16, height = 12, plot = heatmap, compression = "lzw", dpi = 600)
+#, filename = "heatmap.png", width = 16, height = 12
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+***Old Stuff***
+
+Random Forest - Regression Based on Maturity Days
+
+```{r}
+#Maturity Days
+response_days <- as.factor(sample_data(phy_wall_swabs_clean_prev_filter)$Maturity_Days)
+#combine
+rf.data.days <- data.frame(response_days, predictors)
+#tune to determine optimum mtry value
+tuneRF(y = as.numeric(response_days), x = rf.data.days, stepFactor = 1.5, ntreeTry = 5000, improve = 0.001, mtry = 48)
+#generate RF model
+maturity.days.classify <- randomForest(as.numeric(response_days)~., data = rf.data.days, ntree = 5000, mtry = 48, importance = T)
+maturity.days.classify
+
+
+
+# get microbial abundance
+imp.abd.asv <- data.frame(t(otu_table(phy_wall_swabs_clean_prev_filter))[,asv.imp])
+
+# combine with sample data
+imp.df.asv <- data.frame(sample_data(phy_wall_swabs_clean_prev_filter)) %>% 
+  cbind(imp.abd.asv) %>% 
+  pivot_longer(cols = asv.imp,
+               names_to = "ASV", values_to = "Abundance")
+
+head(imp.df.asv, 10)
+
+imp.plot.asv <- ggplot(imp.df.asv, aes(x = Abundance)) + 
+  geom_density(aes(fill = Maturity_Group),
+              alpha = 0.5) +
+  facet_wrap(~ASV) +
+  labs(title = "Abundance of Discriminative Species",
+     # subtitle = "Oscillibacter sp.",
+     x = "Abundance",
+     y = "Density of samples",
+     fill = "Age") +
+  # below is for aesthetics
+  theme_minimal()
+
+imp.plot.asv
+
+```
+
+
+
+
+Alternate RF Methods but More Confusing/Complex
+
+RF with Caret/Ranger
+
+```{r}
+melted_test = psmelt(phy_wall_swabs_clean_prev_filter)
+
+
+pls.fit = train(response ~ ., data = rf.data, method = "pls")
+
+
+
+dataMatrix <- data.frame(Maturity = sample_data(phy_wall_swabs_clean_prev_filter)$Maturity_Group, t(otu_table(phy_wall_swabs_clean_prev_filter)))
+# set up training groups
+inTrain = createDataPartition(dataMatrix$Maturity, p = 0.66, list = F)
+training <- dataMatrix[inTrain,]
+testing <- dataMatrix[-inTrain,]
+
+fitControl = trainControl(method = "repeatedcv", number = 10, repeats = 10, preProcOptions = "center", search = "grid", allowParallel = T)
+tunegrid <- expand.grid(.mtry = (1:50)) 
+
+bmFit1 <- train(Maturity ~ ., data = training, 
+                 method = "rf", 
+                 trControl = fitControl, 
+                 tuneLength = 15,
+                 tuneGrid = tunegrid,
+                 ## This last option is actually one
+                 ## for gbm() that passes through
+                 verbose = FALSE)
+bmFit1
+
+predictedClasses = predict(bmFit1, test = testing)
+table(pred = predictedClasses, actual = testing$Maturity)
+
+training.list <- sample(rownames(sample_data(phy_wall_swabs_clean_prev_filter)), size = 100)
+inTrain <- which(rownames(sample_data(phy_wall_swabs_clean_prev_filter)) %in% training.list)
+training <- dataMatrix[inTrain,]
+testing <- dataMatrix[-inTrain,]
+plsFit <- train(Maturity ~ ., data = training, method = "pls", preProc = "center")
+
+
+
+plsClasses <- predict(plsFit, newdata = testing)
+table(plsClasses, testing$Maturity)
+
+rfFit <- train(Maturity ~ ., data = training, method = "ranger",
+               preProc = "center")
+rfClasses <- predict(rfFit, newdata = testing)
+table(rfClasses, testing$Maturity)
+```
+
+
+
+
+Patchwork for Appendix (Dissertation)
+
+```{r} 
+AppendixI = ((wall_swabs_bray / PCA_genus_no_legend) + plot_layout(guides = "collect")) | barplot_genus_legend_adjust
+AppendixI = AppendixI + plot_annotation(tag_levels = "A")
+AppendixI
+ggsave("AppendixI.png", height = 8, width = 12, dpi = 600)
+ggsave("AppendixI.eps", height = 8, width = 12, dpi = 600)
+ggsave("AppendixI.tiff", compression = "lzw", height = 8, width = 12, dpi = 600)
+
+save_plot("AppendixI.png", plot = AppendixI, base_asp = 1.1)
+```
+
+
+
+
+
+```{r}
+session_info()
+```
+
+
+

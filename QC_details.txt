@@ -1,0 +1,3 @@
+QC details
+8000 reads minumum
+8000 16S copies via qPCR

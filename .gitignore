@@ -1,0 +1,72 @@
+# R project files
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.Rdata
+.httr-oauth
+.quarto
+
+# macOS
+.DS_Store
+
+# Large binary figures (keep PNGs only)
+*.tiff
+*.eps
+
+# QIIME2 artifacts (too large for GitHub)
+*.qza
+*.qzv
+
+# R knit cache and HTML output
+*_cache/
+*_files/
+*.html
+
+# Old/redundant figure directories
+Figures_all_maturity_group/
+Figures_all_Material/
+
+# Large/redundant data files
+rep-seqs-all-runs - Copy/
+rep-seqs-all-runs - Copy.zip
+2024.09.backbone.full-length.nb.sklearn-1.4.2.qza
+
+# Temp files
+~$*
+
+# Office and archive files
+*.xlsx
+*.docx
+*.zip
+
+# Materials sub-project (separate scope)
+Materials/
+
+# Old filename (renamed to Material_Comparison.Rmd)
+Material Comparison.Rmd
+
+# Legacy/internal files
+Time Series.Rmd
+upset code for joerg.txt
+upset_format.csv
+For_claude.csv
+AppendixI.*
+heatmap.*
+2021_wall_swabs_*.png
+hatchery_2017-2019_*.png
+L7_table.csv
+
+# Old/duplicate figure PNGs (superseded by current knit output)
+Figures_all_maturity_days/Baffle_bar.png
+Figures_all_maturity_days/Baffle_barplots.png
+Figures_all_maturity_days/Figure_1_barplots_cowplot.png
+Figures_all_maturity_days/Figure_4_upset_plots_genus_cow.png
+Figures_all_maturity_days/Important_Genera_RF.png
+Figures_all_maturity_days/Important_Genera_RF_cow.png
+Figures_all_maturity_days/SFig_PCA_arrows_iris_plot.png
+Figures_all_maturity_days/SFig_PCA_arrows_plot.png
+Figures_all_maturity_days/SFigure_2_upset_plots_class.png
+Figures_all_maturity_days/SFigure_3_RF_25_asvs.png
+Figures_all_maturity_days/SFigure_3_RF_20_asvs.png
+Figures_all_maturity_days/tailscreen_barplots.png
