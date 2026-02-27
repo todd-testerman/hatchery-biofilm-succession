@@ -1,6 +1,6 @@
 # Succession and Shifting Identities in Freshwater, Built Environment Biofilm Communities
 
-Code and data for Testerman et al. (2025).
+Code and data for Testerman et al. (2026).
 
 ## Overview
 
