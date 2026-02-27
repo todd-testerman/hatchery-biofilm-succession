@@ -358,6 +358,49 @@ ggsave("Figures_all_maturity_days/Figure_3_alpha_div.png")
 ggsave("Figures_all_maturity_days/Figure_3_alpha_div.tiff", dpi = 300)
 ```
 
+## Total Bacterial Load (16S qPCR)
+
+```{r qpcr-total-load}
+# Extract 16S copy numbers from sample metadata
+sd_ws <- data.frame(sample_data(phy_wall_swabs_clean))
+sd_ws$Copies_16S <- as.numeric(as.character(sd_ws$X16S_Copies))
+sd_ws$Maturity_Days <- factor(sd_ws$Maturity_Days,
+                              levels = c("9", "23", "38", "53", "65", "80"))
+sd_ws$log_copies <- log10(sd_ws$Copies_16S)
+
+# Kruskal-Wallis test across timepoints
+kw_qpcr <- kruskal.test(log_copies ~ Maturity_Days, data = sd_ws)
+kw_qpcr
+
+# Pairwise Wilcoxon tests (Holm correction)
+qpcr_wilcox <- sd_ws %>% wilcox_test(log_copies ~ Maturity_Days)
+qpcr_wilcox
+write.table(qpcr_wilcox, "qpcr_wilcox_ws.csv", sep = ",")
+
+# Spearman correlation: biofilm age vs total bacterial load
+cor_qpcr <- cor.test(as.numeric(as.character(sd_ws$Maturity_Days)),
+                     sd_ws$log_copies, method = "spearman")
+cor_qpcr
+
+# Early vs Late comparison
+sd_ws$Maturity_Group <- ifelse(as.numeric(as.character(sd_ws$Maturity_Days)) <= 38,
+                               "Early", "Late")
+wilcox.test(log_copies ~ Maturity_Group, data = sd_ws)
+
+# Median copies per group
+tapply(sd_ws$Copies_16S, sd_ws$Maturity_Group, median)
+
+# Boxplot
+qpcr_plot <- ggplot(sd_ws, aes(x = Maturity_Days, y = Copies_16S, color = Maturity_Days)) +
+  geom_boxplot(show.legend = TRUE, outlier.size = 0.2, lwd = 0.25) +
+  geom_point(size = 0.2) +
+  scale_y_log10(labels = scales::comma) +
+  theme_bw() +
+  labs(color = "Age (Days)", y = "16S rRNA gene copies", x = "Biofilm Age (Days)") +
+  annotation_logticks(sides = "l")
+qpcr_plot
+```
+
 ## Figure 4: UpSet Plots
 
 ```{r fig4-upset-genus, fig.width=10, fig.height=4}
@@ -506,7 +549,7 @@ ggsave("Figures_all_maturity_days/Figure_5_ancomBC.tiff", width = 11, dpi = 300)
 
 ## Figure 6: Boxplots of Important Taxa
 
-```{r fig6-important-taxa-prep, fig.width=10, fig.height=12}
+```{r fig6-important-taxa-prep}
 # Genus-level relative abundance
 phy_wall_swabs_clean_genus_ra <- aggregate_taxa(phy_wall_swabs_clean, level = "Genus")
 phy_wall_swabs_clean_genus_normalize <- transform_sample_counts(phy_wall_swabs_clean_genus_ra, function(x) (x / sum(x)) * 100)
@@ -536,44 +579,50 @@ make_taxon_boxplot <- function(data, taxon_col, taxon_name, y_limits, y_breaks, 
 }
 ```
 
-```{r fig6-important-taxa-plots, fig.width=10, fig.height=12}
-halisco_plot   <- make_taxon_boxplot(melted_genus, "Genus", "Haliscomenobacter", c(0, 100), c(0, 1, 5, 10, 20, 30, 40))
-caulo_plot     <- make_taxon_boxplot(melted_genus, "Genus", "Caulobacter", c(0, 10), c(0, 1, 2, 3, 4, 5, 10))
-inhella_plot   <- make_taxon_boxplot(melted_genus, "Genus", "Inhella", c(0, 3), c(0, 1, 2))
-rhizor_plot    <- make_taxon_boxplot(melted_genus, "Genus", "Rhizorhapis", c(0, 50), c(0, 1, 5, 10, 20, 30, 40))
-sphingorh_plot <- make_taxon_boxplot(melted_genus, "Genus", "Sphingorhabdus", c(0, 20), c(0, 1, 2, 3, 4, 5, 10))
-phreato_plot   <- make_taxon_boxplot(melted_genus, "Genus", "Phreatobacter", c(0, 8), c(0, 1, 2, 3, 4, 5))
-blfdi19_plot   <- make_taxon_boxplot(melted_genus, "Genus", "Blfdi19", c(0, 10), c(0, 1, 5, 10))
-om27_plot      <- make_taxon_boxplot(melted_genus, "Genus", "OM27_clade", c(0, 10), c(0, 1, 2, 3, 4, 5, 10))
-vario_plot     <- make_taxon_boxplot(melted_genus, "Genus", "Variovorax", c(0, 8), c(0, 1, 2, 3, 4, 5))
-sapro_plot     <- make_taxon_boxplot(melted_genus, "Genus", "Saprospiraceae Family", c(0, 150), c(0, 1, 5, 10, 20, 30, 40, 100))
-rhodo_plot     <- make_taxon_boxplot(melted_genus, "Genus", "Rhodobacteraceae Family", c(0, 100), c(0, 1, 5, 10, 20, 30, 40, 100))
-verruco_plot   <- make_taxon_boxplot(melted_genus, "Genus", "Verrucomicrobiaceae Family", c(0, 10), c(0, 1, 2, 3, 4, 5, 10))
-cytopho_plot   <- make_taxon_boxplot(melted_genus, "Genus", "Cytophagales Order", c(0, 10), c(0, 1, 2, 3, 4, 5, 10))
-chitino_plot   <- make_taxon_boxplot(melted_genus, "Genus", "Chitinophagales Order", c(0, 25), c(0, 1, 2, 3, 4, 5, 10, 20))
-verruco_class_plot <- make_taxon_boxplot(melted_genus, "Genus", "Verrucomicrobiae Class", c(0, 10), c(0, 1, 2, 3, 4, 5, 10))
-bacteria_plot  <- make_taxon_boxplot(melted_genus, "Genus", "Bacteria Kingdom", c(0, 25), c(0, 1, 2, 3, 4, 5, 10, 20))
+```{r fig6-important-taxa-plots, fig.width=10, fig.height=9}
+# Ordered early-to-late by successional stage
 
-# Composite Figure 6
+# Early-stage dominants (peak at day 9, declining)
+caulo_plot     <- make_taxon_boxplot(melted_genus, "Genus", "Caulobacter", c(0, 5), c(0, 1, 2, 3, 4))
+flavo_plot     <- make_taxon_boxplot(melted_genus, "Genus", "Flavobacterium", c(0, 50), c(0, 1, 5, 10, 20, 30, 40))
+sphingorh_plot <- make_taxon_boxplot(melted_genus, "Genus", "Sphingorhabdus", c(0, 10), c(0, 1, 2, 3, 4, 5, 10))
+
+# Mid-succession specialists (peak day 23-38, declining later)
+rhizor_plot    <- make_taxon_boxplot(melted_genus, "Genus", "Rhizorhapis", c(0, 20), c(0, 1, 5, 10, 20))
+bdello_plot    <- make_taxon_boxplot(melted_genus, "Genus", "Bdellovibrio", c(0, 3), c(0, 0.5, 1, 1.5, 2))
+methylo_plot   <- make_taxon_boxplot(melted_genus, "Genus", "Methylotenera", c(0, 20), c(0, 1, 5, 10, 15))
+
+# Persistent colonizer (rises early, plateaus)
+rhodo_plot     <- make_taxon_boxplot(melted_genus, "Genus", "Rhodobacteraceae Family", c(0, 25), c(0, 1, 5, 10, 20))
+
+# Late-stage dominants (increasing throughout)
+sapro_plot     <- make_taxon_boxplot(melted_genus, "Genus", "Saprospiraceae Family", c(0, 40), c(0, 1, 5, 10, 20, 30, 40))
+halisco_plot   <- make_taxon_boxplot(melted_genus, "Genus", "Haliscomenobacter", c(0, 30), c(0, 1, 5, 10, 20, 30))
+verruco_plot   <- make_taxon_boxplot(melted_genus, "Genus", "Verrucomicrobiaceae Family", c(0, 5), c(0, 1, 2, 3, 4, 5))
+nanno_plot     <- make_taxon_boxplot(melted_genus, "Genus", "Nannocystis", c(0, 1.5), c(0, 0.25, 0.5, 0.75, 1))
+
+# Composite Figure 6 (early -> mid -> persistent -> late)
 Figure_6 <- (
-  halisco_plot + caulo_plot + inhella_plot + rhizor_plot +
-  sphingorh_plot + phreato_plot + blfdi19_plot + om27_plot +
-  vario_plot + sapro_plot + rhodo_plot + verruco_plot +
-  cytopho_plot + chitino_plot + verruco_class_plot + bacteria_plot
-) + plot_layout(guides = "collect")
+  caulo_plot + flavo_plot + sphingorh_plot +
+  rhizor_plot + bdello_plot + methylo_plot +
+  rhodo_plot + sapro_plot + halisco_plot +
+  verruco_plot + nanno_plot + plot_spacer()
+) + plot_layout(ncol = 3, guides = "collect")
 Figure_6
 
-ggsave("Figures_all_maturity_days/Figure_6_important_taxa.png", width = 11)
-ggsave("Figures_all_maturity_days/Figure_6_important_taxa.tiff", width = 11, dpi = 600)
+ggsave("Figures_all_maturity_days/Figure_6_important_taxa.png", width = 10, height = 9)
+ggsave("Figures_all_maturity_days/Figure_6_important_taxa.tiff", width = 10, height = 9, dpi = 600)
 ```
 
-```{r fig6-pathogen-boxplots}
-# F. columnare and F. psychrophilum (individual supplemental figures)
+```{r sfig6-sfig7-pathogen-boxplots}
+# SFigure 6: F. columnare and SFigure 7: F. psychrophilum
 fc_plot <- make_taxon_boxplot(melted_species, "Species", "Flavobacterium_columnare", c(0, 8), c(0, 1, 5), title = "Flavobacterium columnare")
 fp_plot <- make_taxon_boxplot(melted_species, "Species", "Flavobacterium_psychrophilum", c(0, 8), c(0, 1, 5), title = "Flavobacterium psychrophilum")
 
-ggsave("Figures_all_maturity_days/SFig_Fc_maturity.tiff", fc_plot, width = 6, height = 4, dpi = 300)
-ggsave("Figures_all_maturity_days/SFig_Fp_maturity.tiff", fp_plot, width = 6, height = 4, dpi = 300)
+ggsave("Figures_all_maturity_days/SFigure_6_Fc_boxplot.png", fc_plot, width = 6, height = 4)
+ggsave("Figures_all_maturity_days/SFigure_6_Fc_boxplot.tiff", fc_plot, width = 6, height = 4, dpi = 300)
+ggsave("Figures_all_maturity_days/SFigure_7_Fp_boxplot.png", fp_plot, width = 6, height = 4)
+ggsave("Figures_all_maturity_days/SFigure_7_Fp_boxplot.tiff", fp_plot, width = 6, height = 4, dpi = 300)
 ```
 
 # --- SUPPLEMENTAL FIGURES ---
@@ -630,15 +679,15 @@ ggsave("Figures_all_maturity_days/SFigure_2_baffle_barplots.png", width = 10, he
 ggsave("Figures_all_maturity_days/SFigure_2_baffle_barplots.tiff", dpi = 300)
 ```
 
-## SFigure 3: PCA Biplot with Iris Plot
+## SFigure 3: PCA Biplot
 
-```{r sfig3-pca-iris, fig.width=10, fig.height=12}
+```{r sfig3-pca-biplot, fig.width=8, fig.height=6}
 phy_wall_swabs_filter@sam_data$Maturity_Days <- factor(
   phy_wall_swabs_filter@sam_data$Maturity_Days,
   levels = c("9", "23", "38", "53", "65", "80")
 )
 
-PCA_wall_swabs <- phy_wall_swabs %>%
+SFigure_3 <- phy_wall_swabs %>%
   tax_transform(rank = "Genus", trans = "clr") %>%
   ord_calc(method = "auto") %>%
   ord_plot(
@@ -657,23 +706,10 @@ PCA_wall_swabs <- phy_wall_swabs %>%
     axis.title.y = element_text(size = 12, face = "bold"),
     legend.key.size = unit(0.2, "cm")
   )
+SFigure_3
 
-iris_plot <- phy_wall_swabs_filter %>%
-  tax_transform(rank = "Genus", trans = "clr") %>%
-  ord_calc(method = "auto") %>%
-  ord_plot_iris(
-    tax_level = "Genus", ord_plot = "none",
-    anno_colour = "Maturity_Days", n_taxa = 20, palette = genus_palette
-  ) +
-  guides(color = "none")
-
-SFigure_3 <- PCA_wall_swabs
-ggsave("Figures_all_maturity_days/SFigure_3_PCA_arrows.png", width = 10, height = 12)
-ggsave("Figures_all_maturity_days/SFigure_3_PCA_arrows.tiff", dpi = 300)
-
-# Iris plot (separate save)
-ggsave("Figures_all_maturity_days/SFigure_3_iris_plot.png", plot = iris_plot, width = 10, height = 6)
-ggsave("Figures_all_maturity_days/SFigure_3_iris_plot.tiff", plot = iris_plot, width = 10, height = 6, dpi = 300)
+ggsave("Figures_all_maturity_days/SFigure_3_PCA_biplot.png", width = 8, height = 6)
+ggsave("Figures_all_maturity_days/SFigure_3_PCA_biplot.tiff", width = 8, height = 6, dpi = 300)
 ```
 
 ## SFigure 4: UpSet Plot - Class Level
@@ -755,20 +791,25 @@ genus_palette2 <- distinct_palette(n = 30, add = NA)
 names(genus_palette2) <- unique(imp.25$Genus)
 
 SFigure_5 <- ggplot(imp.25, aes(x = predictors, y = MeanDecreaseGini, fill = fct_reorder2(Genus, MeanDecreaseGini, predictors))) +
-  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
-  ylab("Importance (Mean Decrease in Gini)") + xlab("ASV") +
   geom_bar(stat = "identity") +
   scale_fill_manual(values = genus_palette2) +
+  ylab("Importance (Mean Decrease in Gini)") + xlab("ASV") +
   labs(fill = "Genus") +
-  guides(fill = guide_legend(reverse = TRUE))
+  guides(fill = guide_legend(reverse = TRUE, ncol = 3)) +
+  theme_bw() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+        legend.position = "bottom",
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 9),
+        legend.key.size = unit(0.4, "cm"))
 SFigure_5
 
 # Test on held-out data
 test_predictions <- predict(maturity.classify, test_data)
 table(test_predictions, test_data$response)
 
-ggsave("Figures_all_maturity_days/SFigure_5_RF_25_asvs.png", width = 4)
-ggsave("Figures_all_maturity_days/SFigure_5_RF_25_asvs.tiff", width = 11, dpi = 300)
+ggsave("Figures_all_maturity_days/SFigure_5_RF_25_asvs.png", width = 8, height = 6)
+ggsave("Figures_all_maturity_days/SFigure_5_RF_25_asvs.tiff", width = 8, height = 6, dpi = 300)
 ```
 
 ## Session Info
